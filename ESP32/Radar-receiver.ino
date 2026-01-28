@@ -1,6 +1,5 @@
 // RADAR ESP32 (Receiver) — IMU->RADAR via ESP-NOW
-// Responsibility: Continuous tracking & Immobility Alerts
-// Logic: Always runs. Backend filters data based on active session.
+
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -9,26 +8,18 @@
 #include <esp_now.h>
 #include <math.h>
 #include "RD03D.h"
-
-// --- Config ---
-const char* PATIENT_ID = "p1";
-const char* WIFI_SSID     = "Mariamm";
-const char* WIFI_PASSWORD = "ma200333";
-const char* CLOUD_URL     = "https://receivedata-ddy3ss2dzq-uc.a.run.app";
-
-const unsigned long WIFI_RETRY_MS   = 30000;  
+#include "parameters.h" 
+#include "secrets.h"    
 unsigned long lastWifiRetryMs = 0;
 
 // ===================== Radar HW =====================
-#define RX_PIN 26
-#define TX_PIN 27
-RD03D radar(RX_PIN, TX_PIN);
+RD03D radar(RX_PIN, TX_PIN); // משתמש ב-RX_PIN, TX_PIN מתוך parameters.h
 
 // ===================== IMU packet =====================
 typedef struct __attribute__((packed)) {
   uint32_t seq;
-  uint8_t  imuMoving;     // 0/1
-  uint8_t  activity;      // 0..100
+  uint8_t  imuMoving;    
+  uint8_t  activity;     
   float    wmag;
   float    alim;
   float    tiltDeg;
@@ -45,7 +36,7 @@ static bool prevLocked = false;
 struct TrackState {
   bool  locked = false;
   int   idx = -1;
-  float x = 0, y = 0, v = 0; 
+  float x = 0, y = 0, v = 0;
   int   stableFrames = 0;
   int   lostFrames = 0;
 };
@@ -58,17 +49,7 @@ struct Target {
 TrackState patient;
 
 // ===================== TUNING =====================
-const unsigned long IMU_FRESH_MS = 2000;
-const float GATE_DPOS_M = 0.8f;   
-const float GATE_DV     = 0.7f;   
-const float V_MOVE_TH   = 0.12f;  
-const float FAST_V      = 0.85f;  
-const int NEED_STABLE_TO_LOCK = 6;    
-const int MAX_LOST_FRAMES     = 40;  
-const float MIN_Y_M = 0.3f;
-const float MAX_Y_M = 4.0f;
 
-const unsigned long IMMOBILITY_TIMEOUT = 30000; 
 unsigned long lastMovementTime = 0;
 bool longAlertSent = false;
 
@@ -96,7 +77,7 @@ static bool postJsonToCloud(const String& json, unsigned long nowMs) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  http.begin(client, CLOUD_URL);
+  http.begin(client, CLOUD_URL); 
   http.setTimeout(2500);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(json);
@@ -107,12 +88,12 @@ static bool postJsonToCloud(const String& json, unsigned long nowMs) {
 
 static String buildImmobilityJson(unsigned long immobilityMs) {
   String j = "{";
-  j += "\"patientId\":\"" + String(PATIENT_ID) + "\",";
+  j += "\"patientId\":\"" + String(PATIENT_ID) + "\","; 
   j += "\"type\":\"long_immobility\",";
   j += "\"source\":\"radar\",";
   j += "\"immobilityMs\":" + String((uint32_t)immobilityMs) + ",";
   j += "\"radarLocked\":true,"; 
-  j += "\"imuMoving\":false"; 
+  j += "\"imuMoving\":false";
   j += "}";
   return j;
 }
@@ -232,7 +213,7 @@ void loop(){
   portEXIT_CRITICAL(&imuMux);
 
   bool haveImu = (now - imuLast) < IMU_FRESH_MS;
-bool imuMovingNow = haveImu ? ((imuSnap.imuMoving != 0) || (imuSnap.activity > 5)) : false;
+  bool imuMovingNow = haveImu ? ((imuSnap.imuMoving != 0) || (imuSnap.activity > 5)) : false;
   int  imuActivity  = haveImu ? (int)imuSnap.activity : 0;
 
   Target tar[3];
@@ -242,22 +223,19 @@ bool imuMovingNow = haveImu ? ((imuSnap.imuMoving != 0) || (imuSnap.activity > 5
   int best = pickBest(tar, patient, haveImu, imuMovingNow, imuActivity, scores);
   updateTrack(patient, best, tar);
 
-  // לוגיקת איפוס טיימר: אם יש תנועה (רדאר או IMU) -> מאפסים את השעון
   bool radarSaysMoving = (patient.locked && fabsf(patient.v) > V_MOVE_TH);
   if (imuMovingNow || radarSaysMoving) {
     lastMovementTime = now;
-    longAlertSent = false; // מאפשר שליחת התראה חדשה בפעם הבאה שינוח
+    longAlertSent = false;
   }
 
-  // בדיקת חוסר תנועה
   if (!longAlertSent && (now - lastMovementTime > IMMOBILITY_TIMEOUT)) {
-      // שולחים רק אם הרדאר נעול על המטופל (לא סתם חדר ריק)
      if (patient.locked) { 
         Serial.println(">>> LONG IMMOBILITY ALERT <<<");
         unsigned long immMs = now - lastMovementTime;
         String j = buildImmobilityJson(immMs);
         if (postJsonToCloud(j, now)) {
-          longAlertSent = true; // נשלח רק פעם אחת לאירוע מנוחה
+          longAlertSent = true;
         }
      }
   }
