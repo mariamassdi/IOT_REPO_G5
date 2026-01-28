@@ -7,16 +7,11 @@
 #include <esp_now.h>
 #include "freertos/portmacro.h"
 #include <vector> 
-
-// ===================== הגדרות חומרה ורשת =====================
-#define MPU9250_ADDR 0x68
-const char* PATIENT_ID = "p1";
-const char* WIFI_SSID     = "Mariamm";    
-const char* WIFI_PASSWORD = "ma200333";
-const char* CLOUD_URL     = "https://receivedata-ddy3ss2dzq-uc.a.run.app";
+#include "parameters.h" 
+#include "secrets.h"   
 
 // ===================== ESP-NOW (IMU -> RADAR) =====================
-uint8_t RADAR_MAC[6] = {0xCC,0xDB,0xA7,0x5A,0x7F,0xC0};
+
 typedef struct __attribute__((packed)) {
   uint32_t seq;
   uint8_t  imuMoving;      
@@ -29,21 +24,17 @@ typedef struct __attribute__((packed)) {
 static ImuStatusPacket imuPkt;
 static uint32_t imuSeq = 0;
 static unsigned long lastEspNowSend = 0;
-const unsigned long ESPNOW_SEND_MS = 50; 
 
-// ===================== גלובליים לתקשורת =====================
 WiFiClientSecure client;
 HTTPClient http;
 bool isHttpConnected = false;
 unsigned long lastSend = 0; 
 
-// === מבנה לתור התראות (התוספת היחידה) ===
 struct PendingAlert {
   String jsonPayload;
 };
-std::vector<PendingAlert> alertQueue; // התור לשמירת התראות
+std::vector<PendingAlert> alertQueue; 
 
-// ===================== מבנה נתונים משותף =====================
 struct SharedData {
   int steps;
   int stairs;
@@ -62,45 +53,28 @@ portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 // ===================== משתני חיישן (ליבה 1) =====================
 MPU9250_WE myMPU9250 = MPU9250_WE(MPU9250_ADDR);
 
-const float threshold = 0.15; 
-const int bufferLength = 50;
-float buffer[bufferLength];
+float buffer[50];
 int bufferIndex = 0;
 bool stepDetected = false;
-const unsigned long debounceDelay = 300;
 unsigned long lastStepTime = 0;
 float prevAx = 0.0, prevAy = 0.0, prevAz = 0.0;
 bool firstSample = true;
-const float yThreshold = 0.15;
 int local_steps = 0;
 
 enum StairStep { ST_NONE, ST_UP, ST_DOWN, ST_UNK };
 int local_stairs = 0;
 bool stairWinActive = false;
 unsigned long stairWinStart = 0;
-const unsigned long STAIR_WIN_MS = 350;
 float alimSqSum = 0.0f;
 int   alimN = 0;
 float tiltMinW = 9999.0f;
 float tiltMaxW = -9999.0f;
 float yPosPeak = 0.0f;   
 float yNegPeak = 0.0f;   
-const float STAIRS_ALIM_RMS_TH   = 0.34f; 
-const float STAIRS_TILT_RANGE_TH = 1.3f;
-const float STAIRS_DIR_RATIO = 1.25f;       
-const bool INVERT_Y = false;
 
 enum FallState { NORMAL, SUSPECT, ALERT, IM_OK };
 FallState fallState = NORMAL;
-const float IMPACT_G = 2.0f;   
-const float ROT_DPS = 250.0f;  
-const float TILT_DEG = 60.0f;
-const float STILL_W = 120.0f;  
-const float STILL_AL = 0.2f;   
-const unsigned long STILL_TIME_MS = 1000;
-const unsigned long SUSPECT_TIMEOUT_MS = 3000;
-const unsigned long OK_TIMEOUT_MS = 30000;
-const unsigned long IM_OK_HOLD_MS = 5000;
+
 unsigned long suspectStart = 0;
 unsigned long stillStart = 0;
 unsigned long alertStart = 0;
@@ -111,7 +85,6 @@ unsigned long local_fallSeq = 0;
 bool imOkJustConfirmed = false;
 xyzFloat gLP = { 0, 0, 0 };
 bool gInit = false; 
-const float alphaG = 0.9696970f;
 
 // ===================== פונקציות עזר =====================
 static inline float norm3(float x, float y, float z) { return sqrtf(x*x+y*y+z*z); }
@@ -154,9 +127,9 @@ void finishStairWindowAndClassify() {
   }
 }
 
-// ===================== ליבה 1: המוח והחיישנים =====================
+// ===================== ליבה 1: והחיישנים =====================
 void SensorTask(void *pvParameters) {
-  for(int i=0; i<bufferLength; i++) buffer[i] = 1.0f;
+  for(int i=0; i<BUFFER_LENGTH; i++) buffer[i] = 1.0f;
   for(;;) {
     unsigned long now = millis();
     xyzFloat gValue = myMPU9250.getGValues();
@@ -165,9 +138,9 @@ void SensorTask(void *pvParameters) {
     float wmag = norm3(gyro.x, gyro.y, gyro.z);
 
     if (!gInit) { gLP = gValue; gInit = true; }
-    gLP.x = alphaG * gLP.x + (1.0f - alphaG) * gValue.x;
-    gLP.y = alphaG * gLP.y + (1.0f - alphaG) * gValue.y;
-    gLP.z = alphaG * gLP.z + (1.0f - alphaG) * gValue.z;
+    gLP.x = ALPHA_G * gLP.x + (1.0f - ALPHA_G) * gValue.x;
+    gLP.y = ALPHA_G * gLP.y + (1.0f - ALPHA_G) * gValue.y;
+    gLP.z = ALPHA_G * gLP.z + (1.0f - ALPHA_G) * gValue.z;
     float alx = gValue.x - gLP.x;
     float aly = gValue.y - gLP.y; float alz = gValue.z - gLP.z;
     float alim = norm3(alx, aly, alz);
@@ -185,20 +158,14 @@ void SensorTask(void *pvParameters) {
     if(firstSample){prevAx=ax;prevAy=ay;prevAz=az;firstSample=false;}
     float dy = fabs(ay - prevAy); prevAx=ax; prevAy=ay;
     prevAz=az;
-    buffer[bufferIndex] = amag; bufferIndex = (bufferIndex + 1) % bufferLength;
-    float avgMag = 0; for(int i=0;i<bufferLength;i++) avgMag+=buffer[i]; avgMag/=bufferLength;
-    if (amag > (avgMag + threshold) && (dy > yThreshold) && fallState == NORMAL) {
-      if (!stepDetected && (now - lastStepTime) > debounceDelay) {
+    buffer[bufferIndex] = amag; bufferIndex = (bufferIndex + 1) % BUFFER_LENGTH;
+    float avgMag = 0; for(int i=0;i<BUFFER_LENGTH;i++) avgMag+=buffer[i]; avgMag/=BUFFER_LENGTH;
+    if (amag > (avgMag + STEP_THRESHOLD) && (dy > Y_THRESHOLD) && fallState == NORMAL) {
+      if (!stepDetected && (now - lastStepTime) > DEBOUNCE_DELAY) {
         finishStairWindowAndClassify();
-        stairWinActive = true; 
-        stairWinStart = now;
-        alimSqSum=0; alimN=0;
-         tiltMinW=9999;
-          tiltMaxW=-9999; 
-          yPosPeak=0; 
-          yNegPeak=0;
-        stepDetected = true; 
-        lastStepTime = now;
+        stairWinActive = true; stairWinStart = now;
+        alimSqSum=0; alimN=0; tiltMinW=9999; tiltMaxW=-9999; yPosPeak=0; yNegPeak=0;
+        stepDetected = true; lastStepTime = now;
          local_steps++;
         Serial.println(">>> STEP DETECTED! <<<");
       }
@@ -210,12 +177,10 @@ void SensorTask(void *pvParameters) {
       if (suspectTrigger) { fallState = SUSPECT; suspectStart = now; }
     } else if (fallState == SUSPECT) {
       if ((tiltDeg > TILT_DEG) && (wmag < STILL_W) && (alim < STILL_AL)) {
-        if (stillStart == 0)
-         stillStart = now;
+        if (stillStart == 0) stillStart = now;
         if (now - stillStart > STILL_TIME_MS) {
           fallState = ALERT;
-          awaitingOk = true;
-           alertStart = now;
+          awaitingOk = true; alertStart = now;
           fallJustTriggered = true; 
           local_fallSeq++; 
           local_falls++;
@@ -244,7 +209,7 @@ void SensorTask(void *pvParameters) {
 void ensureEspNow() {
   if (esp_now_init() != ESP_OK) return;
   esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, RADAR_MAC, 6);
+  memcpy(peerInfo.peer_addr, RADAR_MAC_ADDR, 6); 
   peerInfo.channel = 0;      
   peerInfo.encrypt = false;
   esp_now_add_peer(&peerInfo);
@@ -293,14 +258,14 @@ bool sendJsonToCloudBool(String json) {
   int code = http.POST(json);
   
   if (code >= 200 && code < 300) { 
-    String r = http.getString(); 
-    return true; // הצלחה
+    String r = http.getString();
+    return true; 
   }
   else { 
     http.end(); 
     isHttpConnected = false; 
     Serial.print("HTTP Error: "); Serial.println(code);
-    return false; // כישלון
+    return false;
   }
 }
 
@@ -323,15 +288,13 @@ void loop() {
 
   unsigned long now = millis();
   
-  // === טיפול בהתראות שהמתינו בתור (סנכרון בחזרת אינטרנט) ===
   if (WiFi.status() == WL_CONNECTED && !alertQueue.empty()) {
      Serial.println(">>> Internet Back! Syncing pending alerts...");
      
-     // שליחת ההתראה הראשונה בתור
      PendingAlert alert = alertQueue.front();
      if (sendJsonToCloudBool(alert.jsonPayload)) {
          Serial.println(">>> Sync Success!");
-         alertQueue.erase(alertQueue.begin()); // מוחקים רק אם נשלח בהצלחה
+         alertQueue.erase(alertQueue.begin());
      }
   }
   // ========================================================
@@ -354,7 +317,6 @@ void loop() {
   }
   portEXIT_CRITICAL(&g_mux);
 
-  // 1. שליחת ESP-NOW לרדאר
   if (now - lastEspNowSend >= ESPNOW_SEND_MS) {
     lastEspNowSend = now;
     imuPkt.seq = imuSeq++;
@@ -363,10 +325,9 @@ void loop() {
     imuPkt.wmag = snap.raw_wmag;
     imuPkt.alim = snap.raw_alim;
     imuPkt.tiltDeg = snap.raw_tilt;
-    esp_now_send(RADAR_MAC, (uint8_t*)&imuPkt, sizeof(imuPkt));
+    esp_now_send(RADAR_MAC_ADDR, (uint8_t*)&imuPkt, sizeof(imuPkt)); 
   }
 
-  // 2. שליחה לענן
   if (triggerAlert) {
     Serial.println("!!! FALL DETECTED !!!");
     String json = buildJson(snap, "fall_alert", true);
@@ -375,7 +336,7 @@ void loop() {
     
     if (!sent) {
       Serial.println("!!! NO INTERNET - QUEUING ALERT !!!");
-      if (alertQueue.size() < 20) {
+      if (alertQueue.size() < 20) { 
         alertQueue.push_back({json});
       }
     } else {
