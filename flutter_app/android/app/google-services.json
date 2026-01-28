@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "462166809192",
+    "project_id": "pocg5-c30e6",
+    "storage_bucket": "pocg5-c30e6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:462166809192:android:c051ee7fee7266714739dd",
+        "android_client_info": {
+          "package_name": "com.technion.iot.patient_monitoring"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAceVNMrPuau6dGWTX8W0CVnpANQDpGHqo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
