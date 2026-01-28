@@ -6,6 +6,7 @@
 #include <math.h>
 #include <esp_now.h>
 #include "freertos/portmacro.h"
+#include <vector> 
 
 // ===================== הגדרות חומרה ורשת =====================
 #define MPU9250_ADDR 0x68
@@ -35,6 +36,12 @@ WiFiClientSecure client;
 HTTPClient http;
 bool isHttpConnected = false;
 unsigned long lastSend = 0; 
+
+// === מבנה לתור התראות (התוספת היחידה) ===
+struct PendingAlert {
+  String jsonPayload;
+};
+std::vector<PendingAlert> alertQueue; // התור לשמירת התראות
 
 // ===================== מבנה נתונים משותף =====================
 struct SharedData {
@@ -141,10 +148,9 @@ void finishStairWindowAndClassify() {
   bool yAsym = (yPosPeak > yNegPeak * STAIRS_DIR_RATIO) || (yNegPeak > yPosPeak * STAIRS_DIR_RATIO);
   bool isStairStep = passAlim && (yAsym || passTilt);
   
-  // --- החזרתי את ההדפסות המקוריות שלך ---
   if (isStairStep) {
     local_stairs++;
-    Serial.println(">>> STAIR DETECTED! <<<"); // [cite: 36]
+    Serial.println(">>> STAIR DETECTED! <<<");
   }
 }
 
@@ -184,12 +190,17 @@ void SensorTask(void *pvParameters) {
     if (amag > (avgMag + threshold) && (dy > yThreshold) && fallState == NORMAL) {
       if (!stepDetected && (now - lastStepTime) > debounceDelay) {
         finishStairWindowAndClassify();
-       
-        stairWinActive = true; stairWinStart = now;
-        alimSqSum=0; alimN=0; tiltMinW=9999; tiltMaxW=-9999; yPosPeak=0; yNegPeak=0;
-        stepDetected = true; lastStepTime = now;
+        stairWinActive = true; 
+        stairWinStart = now;
+        alimSqSum=0; alimN=0;
+         tiltMinW=9999;
+          tiltMaxW=-9999; 
+          yPosPeak=0; 
+          yNegPeak=0;
+        stepDetected = true; 
+        lastStepTime = now;
          local_steps++;
-         Serial.println(">>> STEP DETECTED! <<<");  // [cite: 36]
+        Serial.println(">>> STEP DETECTED! <<<");
       }
     } else { stepDetected = false; }
 
@@ -199,15 +210,16 @@ void SensorTask(void *pvParameters) {
       if (suspectTrigger) { fallState = SUSPECT; suspectStart = now; }
     } else if (fallState == SUSPECT) {
       if ((tiltDeg > TILT_DEG) && (wmag < STILL_W) && (alim < STILL_AL)) {
-        if (stillStart == 0) stillStart = now;
+        if (stillStart == 0)
+         stillStart = now;
         if (now - stillStart > STILL_TIME_MS) {
           fallState = ALERT;
-          awaitingOk = true; alertStart = now;
+          awaitingOk = true;
+           alertStart = now;
           fallJustTriggered = true; 
           local_fallSeq++; 
           local_falls++;
-          // --- הדפסה מקורית לנפילה ---
-          Serial.println("!!! FALL DETECTED (Logic Trigger) !!!"); // [cite: 57]
+          Serial.println("!!! FALL DETECTED (Logic Trigger) !!!");
         }
       } else { stillStart = 0; }
       if (now - suspectStart > SUSPECT_TIMEOUT_MS) fallState = NORMAL;
@@ -217,7 +229,7 @@ void SensorTask(void *pvParameters) {
 
     portENTER_CRITICAL(&g_mux);
     g_data.steps = local_steps;
-     g_data.stairs = local_stairs;
+    g_data.stairs = local_stairs;
     g_data.falls = local_falls;
     g_data.fallSeq = local_fallSeq; g_data.isMoving = (moveVal == 1);
     g_data.raw_alim = alim; g_data.raw_wmag = wmag; g_data.raw_tilt = tiltDeg;
@@ -238,29 +250,25 @@ void ensureEspNow() {
   esp_now_add_peer(&peerInfo);
 }
 
-// *** פונקציה חדשה לחיבור מחדש לאינטרנט ***
 void ensureWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
-  
   static unsigned long lastTry = 0;
-  if (millis() - lastTry > 5000) { // נסה להתחבר כל 5 שניות אם מנותק
+  if (millis() - lastTry > 5000) { 
     lastTry = millis();
-    Serial.println("--- WiFi Lost. Reconnecting... ---"); // הדפסה חדשה לדיבאג
+    Serial.println("--- WiFi Lost. Reconnecting... ---");
     WiFi.disconnect();
     WiFi.reconnect();
   }
 }
 
 void setup() {
-  Serial.begin(115200); // [cite: 64]
+  Serial.begin(115200);
   Wire.begin(21, 22);
   WiFi.mode(WIFI_AP_STA); 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi"); // [cite: 65]
-  
-  // המתנה ראשונית + הדפסות הנקודות המקוריות
+  Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println("\nWiFi Connected!"); // [cite: 65]
+  Serial.println("\nWiFi Connected!");
   
   ensureEspNow();
   client.setInsecure();
@@ -270,13 +278,11 @@ void setup() {
   myMPU9250.setAccRange(MPU9250_ACC_RANGE_4G);
   myMPU9250.enableAccDLPF(true);
   myMPU9250.setAccDLPF(MPU9250_DLPF_4);
-  
   xTaskCreatePinnedToCore(SensorTask, "SensorTask", 10000, NULL, 1, NULL, 1);
 }
 
-// פונקציות שליחה לענן
-void sendJsonToCloud(String json) {
-  if (WiFi.status() != WL_CONNECTED) return; // הגנה: אם אין רשת, פשוט צא (המידע יצטבר)
+bool sendJsonToCloudBool(String json) {
+  if (WiFi.status() != WL_CONNECTED) return false;
 
   if (!isHttpConnected) {
       http.begin(client, CLOUD_URL);
@@ -285,14 +291,16 @@ void sendJsonToCloud(String json) {
       isHttpConnected = true;
   }
   int code = http.POST(json);
-  if (code <= 0) { 
-    http.end(); 
-    isHttpConnected = false; 
-    Serial.print("HTTP Error: "); Serial.println(code); // הדפסת שגיאה אם יש
+  
+  if (code >= 200 && code < 300) { 
+    String r = http.getString(); 
+    return true; // הצלחה
   }
   else { 
-    // קריאת התשובה חשובה לשחרור המשאבים
-    String r = http.getString(); 
+    http.end(); 
+    isHttpConnected = false; 
+    Serial.print("HTTP Error: "); Serial.println(code);
+    return false; // כישלון
   }
 }
 
@@ -311,9 +319,23 @@ String buildJson(const SharedData& d, const char* type, bool alert) {
 }
 
 void loop() {
-  ensureWiFi(); // <--- וידוא שה-WiFi תמיד חי
+  ensureWiFi(); 
 
   unsigned long now = millis();
+  
+  // === טיפול בהתראות שהמתינו בתור (סנכרון בחזרת אינטרנט) ===
+  if (WiFi.status() == WL_CONNECTED && !alertQueue.empty()) {
+     Serial.println(">>> Internet Back! Syncing pending alerts...");
+     
+     // שליחת ההתראה הראשונה בתור
+     PendingAlert alert = alertQueue.front();
+     if (sendJsonToCloudBool(alert.jsonPayload)) {
+         Serial.println(">>> Sync Success!");
+         alertQueue.erase(alertQueue.begin()); // מוחקים רק אם נשלח בהצלחה
+     }
+  }
+  // ========================================================
+
   SharedData snap;
   bool triggerAlert = false;
   
@@ -346,13 +368,24 @@ void loop() {
 
   // 2. שליחה לענן
   if (triggerAlert) {
-    // --- הדפסה מקורית לפני שליחה ---
-    Serial.println("!!! SENDING FALL ALERT TO CLOUD !!!"); // [cite: 81]
-    sendJsonToCloud(buildJson(snap, "fall_alert", true));
+    Serial.println("!!! FALL DETECTED !!!");
+    String json = buildJson(snap, "fall_alert", true);
+    
+    bool sent = sendJsonToCloudBool(json);
+    
+    if (!sent) {
+      Serial.println("!!! NO INTERNET - QUEUING ALERT !!!");
+      if (alertQueue.size() < 20) {
+        alertQueue.push_back({json});
+      }
+    } else {
+       Serial.println("!!! ALERT SENT TO CLOUD !!!");
+    }
   }
+  
   if (now - lastSend > 600) {
     lastSend = now;
-    sendJsonToCloud(buildJson(snap, "telemetry", false));
+    sendJsonToCloudBool(buildJson(snap, "telemetry", false));
   }
   delay(5);
 }
