@@ -1,138 +1,50 @@
 # Patient Monitoring Project by: Mariam Assdi, Ranin Haj Yahya, Gharam Kharanbeh
 
-## Details about the project
-This project implements a **patient mobility monitoring system** using:
-- **ESP32 IMU node (ankle)**: reads MPU9250, detects steps/stairs, detects falls, and sends telemetry/alerts to the cloud.
-- **ESP32 Radar node (room)**: receives packets from the imu-ESP,reads RD-03D radar targets, tracks the patient, detects long immobility , and sends alerts to the cloud.
-- **Firebase Cloud Functions **: receives telemetry and alert events over HTTP, manages sessions, stores data in Firestore, and sends push notifications via Firebase Cloud Messaging.
+In this project we built a patient mobility monitoring system that monitors daily activity and safety using two ESP32 devices (IMU + radar) and a smartphone app. The system tracks steps and stair steps, detects potential falls, detects long immobility, and notifies caregivers through push notifications. The app supports three roles: patient, caregiver, and doctor.
+
+## Our Project in details
+
+First, the IMU ESP32 is worn on the ankle and samples the MPU9250 sensors continuously, while the radar ESP32 is placed in the room and tracks the patient using RD-03D radar frames. Both devices send telemetry and alert events to the backend (Firebase Cloud Functions), which stores data in Firestore and triggers push notifications.
+
+1. **Sessions (Patient role)**  
+   The patient starts a monitoring session from the app (SESSION START) and stops it (SESSION STOP). A session controls when telemetry is recorded and when totals are finalized.
+
+2. **Activity tracking (IMU ESP32)**  
+   The IMU samples acceleration/gyro continuously, maintains a moving average baseline for acceleration magnitude, and detects steps when the current magnitude crosses a threshold above the baseline (with debounce). For stairs, the IMU opens a short time window after a detected step and computes additional features (e.g., acceleration RMS and tilt range) to classify the step as stair-related.
+
+3. **Fall detection (IMU ESP32)**  
+   The IMU runs a rule-based state machine. A fall is suspected on strong impact and fast rotation, and is confirmed only if posture/tilt becomes abnormal and motion becomes still for a minimum duration. When confirmed, a fall alert is sent.
+
+4. **Long immobility detection (Radar ESP32)**  
+   The radar reads RD-03D target frames over UART, selects and maintains a single tracked target by scoring candidates and applying position/velocity gating. If the tracked target remains stable with no meaningful movement for longer than `IMMOBILITY_TIMEOUT`, a `long_immobility` alert is sent.
+
+5. **Notifications and handling (Backend + App)**  
+   The backend receives telemetry and alert events over HTTP, manages session state, stores updates in Firestore, and sends push notifications via Firebase Cloud Messaging. The caregiver can view alerts and mark them as handled, the patient can confirm “I’M OK” when an alert is active, and the doctor can view current live metrics and daily session history.
 
 ## Folder description
-- **ESP32**: source code for the esp side.
-  - `IMU_RECIEVER.ino` (MPU9250 + steps/stairs/fall + ESP-NOW sender)
+
+- **ESP32**: source code for the esp side (firmware).  
+  - `IMU_RECIEVER.ino` (MPU9250 + steps/stairs/fall + ESP-NOW sender)  
   - `Radar-sender.ino` (RD-03D + tracking + immobility + ESP-NOW receiver)
 - **Documentation**: wiring diagram + basic operating instructions.
 - **Unit Tests**: tests for individual hardware components (input / output devices).
-- **flutter_app**: dart code for our Flutter app.
-- **Backend**: Firebase Cloud Functions (`index.js`) for ingestion + sessions + push notifications.
-- **Parameters**: contains description of parameters and settings that can be modified the code.
----
+- **flutter_app**: dart code for our Flutter app +Firebase Cloud Functions.
+- **Parameters**: contains description of configurable parameters.
+
 
 ## Arduino/ESP32 libraries used in this project
+
 External:
-- **MPU9250_WE** — used by IMU firmware
-- **RD03D** — used by Radar firmware
+- `MPU9250_WE` - version `0.4.8`
+- `RD03D` - version `XXXX`
 
 Built-in / ESP32 core libraries:
-- **WiFi**
-- **HTTPClient** 
-- **WiFiClientSecure** 
-- **esp_now** (ESP32 core / ESP-NOW protocol)
---
-## Hardware algorithm 
+- `WiFi`
+- `HTTPClient`
+- `WiFiClientSecure`
+- `esp_now`
 
-- **IMU ESP32:** samples MPU9250 acceleration/gyro continuously, builds a moving average for the acceleration magnitude, and detects **steps** when the current magnitude rises above that baseline by a threshold. For **stairs**, it opens a short time window after a step and computes features to classify the step as stair related. For **falls**, it runs a state machine: a fall is suspected on a strong impact and fast rotation, then confirmed only if the tilt is abnormal and motion becomes still for a minimum duration. 
-
-- **Radar ESP32:** reads RD-03D target frames over UART, selects and maintains a single tracked target by scoring candidates and applying position/velocity gates. It determines movement based on the tracked target’s velocity and stability over time and if the movement matches the IMU. If the tracked target remains stable with no meaningful movement for longer than `IMMOBILITY_TIMEOUT` an alert is sent.
-
-## Parameters (modifiable settings)
-### IMU firmware (IMU_RECIEVER.ino)
-
-#### Network / cloud
-- `PATIENT_ID` (default `"p1"`)  
-  Patient identifier embedded in each JSON payload so the backend updates the correct Firestore paths.
-- `WIFI_SSID`, `WIFI_PASSWORD`  
-  Wi-Fi credentials used by `WiFi.begin()` to connect the IMU ESP32 to the network.
-- `CLOUD_URL`  
-  The IMU posts JSON to this URL using Arduino `HTTPClient`.
-
-#### ESP-NOW
-- `RADAR_MAC[6]`  
-  Destination ESP32 MAC address for ESP-NOW packets (the radar board).
-- `ESPNOW_SEND_MS`   
-  Interval between ESP-NOW status transmissions. 
-
-#### Step / stair detection
-- `threshold`  
-  Step detection sensitivity: required gap between current acceleration magnitude (`amag`) and its moving-average baseline.  
-- `bufferLength`  
-  Window size for moving-average baseline.
-- `debounceDelay` 
-  Minimum time between step detections to prevent double counting after a step.
-- `yThreshold` 
-  Minimum absolute delta on the Y axis per sample used to stop noise from triggering steps.
-
-#### Stair window + classification
-- `STAIR_WIN_MS` 
-  Accumulation window after a candidate step. 
-- `STAIRS_ALIM_RMS_TH`  
-  Minimum linear acceleration magnitude during stair window.
-- `STAIRS_TILT_RANGE_TH`  
-  Minimum tilt angle range during stair window. 
-  
-#### Fall detection
-The fall logic is typically a combination of impact + rotation + stillness over time.
-
-- `IMPACT_G`  
-  Impact threshold (g units). 
-- `ROT_DPS`  
-  Rotation threshold (deg/sec). Used to require fast rotation.
-- `TILT_DEG`  
-  Tilt threshold (degrees) after suspected fall. Used to confirm unusual orientation.
-- `STILL_W`  
-  Gyro stillness threshold. Must be below this to consider “not moving.”
-- `STILL_AL`  
-  Linear acceleration stillness threshold. Must be below this to consider “settled.”
-
-Timing parameters (ms):
-- `STILL_TIME_MS`  
-  Duration stillness must persist to confirm a fall.
-- `SUSPECT_TIMEOUT_MS`  
-  Maximum time allowed in SUSPECT before aborting back to NORMAL if confirmation conditions aren’t met.
-
----
-
-### Radar firmware (Radar-sender.ino)
-
-#### Network / cloud
-- `PATIENT_ID`, `WIFI_SSID`, `WIFI_PASSWORD`, `CLOUD_URL`  
-  Same roles as IMU: identify patient, connect to Wi-Fi, post telemetry/alerts to backend.
-- `WIFI_RETRY_MS` 
-  Minimum interval between reconnect attempts. Prevents tight reconnect loops and reduces power usage.
-
-#### Radar hardware
-- `RX_PIN` (default 26), `TX_PIN` (default 27)  
-  UART pins connected to the RD-03D radar module.
-
-#### IMU freshness / fusion logic
-- `IMU_FRESH_MS`  
-  Maximum age for last received IMU ESP-NOW packet. If exceeded, IMU state is treated as stale and radar relies more on its own motion cues.
-
-#### Tracking tuning
-These parameters control how aggressively you “stick” to one target vs switching.
-
-- `GATE_DPOS_M`  
-  Position gating in meters: maximum allowed jump from last track position for a candidate to be considered the same target.
-- `GATE_DV`  
-  Velocity gating: maximum allowed velocity difference to accept a candidate as the same target.
-- `V_MOVE_TH`  
-  Velocity magnitude threshold to mark radar target as moving.
-- `FAST_V`  
-  High-speed cutoff: penalizes targets moving too fast to be the intended patient target.
-- `NEED_STABLE_TO_LOCK`  
-  Number of consecutive frames required to declare a stable lock on a target.
-- `MAX_LOST_FRAMES`  
-  How many frames you can lose the target before dropping lock and restarting search.
-- `MIN_Y_M`, `MAX_Y_M`  
-  Valid distance band (meters). Rejects too near/too far detections.
-
-#### Immobility alert
-- `IMMOBILITY_TIMEOUT` 
-  Time without movement before sending a long immobility alert. 
-- Alert JSON type: `"long_immobility"`  
-  Event type string sent to backend.
----
-
-## Connection diagram:
+## Connection diagram:	
 [ ESP32 ]                 [ RD03D RADAR ]
 +-----------+            +------------+
 |           |            |            |
