@@ -8,7 +8,7 @@
 #include "freertos/portmacro.h"
 #include <vector> 
 #include "parameters.h" 
-#include "secrets.h"   
+#include "SECRETS.h"   
 
 // ===================== ESP-NOW (IMU -> RADAR) =====================
 
