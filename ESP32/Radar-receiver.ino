@@ -9,7 +9,7 @@
 #include <math.h>
 #include "RD03D.h"
 #include "parameters.h" 
-#include "secrets.h"    
+#include "SECRETS.h"    
 unsigned long lastWifiRetryMs = 0;
 
 // ===================== Radar HW =====================
